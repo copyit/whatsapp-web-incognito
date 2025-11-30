@@ -40,6 +40,22 @@ MultiDevice.initialize = function()
                 console.log("WAIncognito: Noise decryption key has been replaced.");
             }
         }
+        else if (format == "raw" && algorithm == "AES-GCM" && keyData.length == 32 && extractable == false && keyUsages.length == 2)
+        {
+            // TODO: need to check if it makes sense to catch these kind of keys, that are imported in the start of the noise handshake
+            //      called from WANoiseHandshake.start
+            //debugger;
+            var key = await originalImportKey.apply(window.crypto.subtle, ["raw", new Uint8Array(keyData), algorithm, false, ["decrypt", "encrypt"]]);
+
+            MultiDevice.writeKey = keyData;
+            MultiDevice.writeCounter = 0;
+            MultiDevice.writeKeyImported = key;
+            MultiDevice.readKey = keyData;
+            MultiDevice.readKeyImported = key;
+            MultiDevice.readCounter = 0;
+            console.log("WAIncognito: Noise keys were replaced, started handshake.");
+
+        }
 
         return originalImportKey.call(window.crypto.subtle, format, keyData, algorithm, extractable, keyUsages);
     };
@@ -62,9 +78,9 @@ MultiDevice.decryptNoisePacket = async function(payload, isIncoming = true)
     var frames = [];
     while (binaryReader._readIndex + 3 < payload.byteLength)
     {
+        var counter = isIncoming ? MultiDevice.readCounter++ : MultiDevice.writeCounter++;
         var size = binaryReader.readUint8() << 16 | binaryReader.readUint16();
         var frame = binaryReader.readBuffer(size);
-        var counter = isIncoming ? MultiDevice.readCounter++ : MultiDevice.writeCounter++;
         var frameInfo = {frame: frame, counter: counter};
 
         frames.push(frameInfo);
@@ -219,7 +235,7 @@ MultiDevice.decryptE2EMessagesFromMessageNode = async function(messageNode)
             switch (chiphertextType)
             {
                 case "pkmsg":
-                    // Pre-Key message
+                    // Pre-Key message, aka establishing new secure session
                     message = await MultiDevice.signalDecryptPrekeyWhisperMessage(ciphertext, storage, address);
                     break;
                 case "msg":
@@ -348,6 +364,11 @@ MultiDevice.signalDecryptPrekeyWhisperMessage = async function(prekeyWhisperMess
             var currentChain = recvChains[chainIndex];
             chainKeyData = {key: currentChain.chainKey, counter: currentChain.nextMsgIndex};
             messageKeys = currentChain.unusedMsgKeys;
+        }
+        else
+        {
+            console.warn("Could not find recevier chain for " + lidAddress.toString());
+            debugger;
         }
     }
     else
@@ -543,6 +564,7 @@ MultiDevice.looksLikeHandshakePacket = function(payload)
     var startOffset = 3;
     if (binaryReader._readIndex = 0, binaryReader.readUint16() == 0x5741) startOffset = 0x7; // chat
     if (binaryReader._readIndex = 0xB, binaryReader.readUint16() == 0x5741) startOffset = 0x12; // chat?ED={routingToken}
+    if (binaryReader._readIndex = 0xD, binaryReader.readUint16() == 0x5741) startOffset = 0x14; // chat?ED={routingToken} version 2
 
     if (startOffset > 3) MultiDevice.numPacketsSinceHandshake = 0; // client hello
     if (++MultiDevice.numPacketsSinceHandshake > 3) return false;
@@ -571,6 +593,7 @@ MultiDevice.looksLikeHandshakePacket = function(payload)
     if (handshakeMessage.clientHello)
     {
         // reset the counters on a new connection to avoid weird stuff
+        // TODO: what happens if mutliple WS connections are queued to start, then one of them completes, then another one starts, but then gets canceled?
         MultiDevice.readKey = null;
         MultiDevice.writeKey = null;
     }
@@ -582,9 +605,16 @@ MultiDevice.waitForNoiseKeyIfNeeded = async function(looksLikeHandshakePacket)
 {
     if (!looksLikeHandshakePacket && MultiDevice.readKey == null)
     {
-        console.log("Warning: Waiting for the noise key to arrive");
+        console.log("WAIncognito: Waiting for the noise key to arrive");
         //debugger;
         await sleep(2000);
+
+        if (MultiDevice.readKey == null)
+        {
+            console.warn("Warning: The Noise key did not arrive despite waiting. Interception might not work.");
+            console.warn("window.crypto.subtle.importKey:")
+            console.warn(window.crypto.subtle.importKey);
+        }
     }
 }
 
