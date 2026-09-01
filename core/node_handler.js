@@ -30,12 +30,15 @@ NodeHandler.isSentNodeAllowed = function (node)
 {
     var action = node.tag;
     var data = node.attrs;
+
+    var jid = data.jid ? data.jid : data.to;
+    if (jid) jid = normalizeJID(jid.toString());
+
     var shouldBlock = 
         (readConfirmationsHookEnabled && action === "read") ||
         (readConfirmationsHookEnabled && action == "receipt" && data["type"] == "read") ||
         (readConfirmationsHookEnabled && action == "receipt" && data["type"] == "read-self") ||
-        (readConfirmationsHookEnabled && action == "receipt" && data["type"] === "played") ||
-        (readConfirmationsHookEnabled && action == "received" && data["type"] === "played") ||
+        (readConfirmationsHookEnabled && action == "receipt" && data["type"] === "played" && isChatBlocked(jid)) ||
 
         (onlineUpdatesHookEnabled && action === "presence" && data["type"] === "available") ||
         (typingUpdatesHookEnabled && action == "presence" && data["type"] == "composing") ||
@@ -47,8 +50,6 @@ NodeHandler.isSentNodeAllowed = function (node)
         {
             case "read":
             case "receipt":
-                var jid = data.jid ? data.jid : data.to;
-                jid = normalizeJID(jid.toString());
 
                 var isReadReceiptAllowed = exceptionsList.includes(jid);
                 if (isReadReceiptAllowed)
@@ -179,7 +180,7 @@ NodeHandler.onSentEncNode = async function (encNode, remoteJid)
         if (!remoteJid.includes(":"))
         {
             var chat = await getChatByJID(remoteJid);
-            var data = { jid: chat.id, index: chat.lastReceivedKey.id, fromMe: chat.lastReceivedKey.fromMe, unreadCount: chat.unreadCount };
+            var data = { jid: getJidOfChat(chat), index: chat.lastReceivedKey.id, fromMe: chat.lastReceivedKey.fromMe, unreadCount: chat.unreadCount };
             setTimeout(function () { document.dispatchEvent(new CustomEvent('sendReadConfirmation', { detail: JSON.stringify(data) })); }, 600);
         }
     }
@@ -220,6 +221,7 @@ NodeHandler.onReceivedMessageNode = async function(messageNode)
 
     var e2eMessagesAllowedStatus = [];
 
+    // Decrypt the inner messages and decide if we want to block some of them
     var e2eMessages = await MultiDevice.decryptE2EMessagesFromMessageNode(messageNode);
     for (var i = 0; i < e2eMessages.length ;i++)
     {
@@ -241,6 +243,10 @@ NodeHandler.onReceivedMessageNode = async function(messageNode)
         console.log(e2eMessages);
     }
 
+    //
+    // Now, edit the message node so that "enc" sub-nodes that we don't like will be ignored by the original WA client
+    //
+
     var modifiedMessageNode = messageNode;
     
     if (!isAllowed)
@@ -258,6 +264,7 @@ NodeHandler.onReceivedMessageNode = async function(messageNode)
                 continue;
             }
     
+            // Check if this specific "enc" message node is allowed, as was decided previously.
             var isNodeAllowed = true;
             for (var status of e2eMessagesAllowedStatus)
             {
@@ -267,9 +274,16 @@ NodeHandler.onReceivedMessageNode = async function(messageNode)
                 }
             }
 
+            // If the "enc" is allowed, include it in our modified clone  
             if (isNodeAllowed)
             {
                 modifiedMessageNode.content.push(node);
+            }
+            else
+            {
+                // TODO: simply removing the <enc> from the <message> might result in WhatsApp saying "[WhatsApp LOG] failedParsingMessage: '....' (XmppParsingFailure)"
+                //      and uploading logs. We could find a better way to edit the message
+                
             }
     
             indexOfEncNode++;
@@ -292,6 +306,12 @@ NodeHandler.onReceivedE2EMessage = async function(messageNode, e2eMessage)
         remoteJid = messageNode.attrs["from"].toString();
         participant = messageNode.attrs["participant"];
         participant = participant ? participant : remoteJid;
+
+        if (messageNode.attrs["sender_pn"] != null)
+        {
+            // we prefer the full phone number JID over the possible LID
+            remoteJid = messageNode.attrs["sender_pn"].toString();
+        }
     }
 
     var isRevokeMessage = NodeHandler.checkForMessageDeletionNode(e2eMessage, messageId, remoteJid);

@@ -2,17 +2,20 @@
 This is a content script responsible for some UI.
 */
 
+
+// Global variables
+var mutationObserver = null;
+var isInterceptionWorking = false;
+var isUIClassesWorking = true;
+var deletedMessagesDB = null;
+var pseudoMsgsIDs = new Set();
+
 if (chrome != undefined) 
 {
 	var browser = chrome;
 }
 
 initialize();
-
-var isInterceptionWorking = false;
-var isUIClassesWorking = true;
-var deletedMessagesDB = null;
-var pseudoMsgsIDs = new Set();
 
 function initialize()
 {
@@ -32,72 +35,91 @@ function initialize()
 
     // initialize mutation observer
     var appElem = document.getElementsByTagName("body")[0];
-    if (appElem != undefined)
+    if (!appElem) return;
+    mutationObserver = new MutationObserver(onMutationsObserved);
+
+    mutationObserver.observe(appElem, { childList: true, subtree: true });
+}
+
+function onMutationsObserved(mutations)
+{
+    var found = false;
+    for (var i = 0; i < mutations.length; i++)
     {
-        var mutationObserver = new MutationObserver(function (mutations)
+        var mutation = mutations[i];
+        var mutationType = mutations[i].type;
+        var addedNodes = mutations[i].addedNodes;
+        var removedNodes = mutations[i].removedNodes;
+
+        // Scan for added nodes
+        for (var j = 0; j < addedNodes.length; j++)
         {
-            var found = false;
-            for (var i = 0; i < mutations.length; i++)
+            var addedNode = addedNodes[j];
+            if (addedNode.classList == undefined) continue;
+
+            if (addedNode.getElementsByClassName("two").length > 0)
             {
-                var addedNodes = mutations[i].addedNodes;
-                var removedNodes = mutations[i].removedNodes;
+                // main app was added, UI is ready
+                addIconIfNeeded();
+                setTimeout(function () { onMainUIReady(); }, 100);
 
-                for (var j = 0; j < addedNodes.length; j++)
+                found = true;
+                break;
+            }
+            else if (addedNode.nodeName.toLowerCase() == "div" && addedNode.classList.contains(UIClassNames.OUTER_DROPDOWN_CLASS))
+            {
+                // dropdown was opened
+                setTimeout(function ()
                 {
-                    var addedNode = addedNodes[j];
-                    if (addedNode.classList == undefined) continue;
+                    document.dispatchEvent(new CustomEvent('onDropdownOpened', {}));
 
-                    if (addedNode.getElementsByClassName("two").length > 0)
-                    {
-                        // main app was added, UI is ready
-                        addIconIfNeeded();
-                        setTimeout(function () { onMainUIReady(); }, 100);
-
-                        found = true;
-                        break;
-                    }
-                    else if (addedNode.nodeName.toLowerCase() == "div" && addedNode.classList.contains(UIClassNames.OUTER_DROPDOWN_CLASS))
-                    {
-                        setTimeout(function ()
-                        {
-                            document.dispatchEvent(new CustomEvent('onDropdownOpened', {}));
-
-                        }, 200);
-                    }
-
-                    var msgNodes = addedNode.querySelectorAll("div.message-in, div.message-out");
-                    // Scan for messages and modify if needed
-                    
-                    for (let i = 0; i < msgNodes.length; i++)
-                    {
-                        const currentNode = msgNodes[i];
-                        onNewMessageNodeAdded(currentNode);
-                    }
-                }
-                
-                for (var j = 0; j < removedNodes.length; j++)
-                {
-                    var removedNode = removedNodes[j];
-                    if (removedNode.classList == undefined) continue;
-                    if (removedNode.classList.contains("two"))
-                    {
-                        // main app was removed, remove our artifacts
-                        var menuItem = document.getElementsByClassName("menu-item-incognito")[0];
-                        var dropItem = document.getElementsByClassName("drop")[0];
-                        if (menuItem != undefined) menuItem.remove();
-                        if (dropItem != undefined) dropItem.remove();
-
-                        found = true;
-                        break;
-                    }
-
-                }
-                if (found) break;
+                }, 200);
             }
 
-        });
+            // Scan for added message nodes and modify if needed
+            function isMessageNode(node)
+            {
+                if (node.childNodes[0] && node.childNodes[0].getAttribute)
+                {
+                    if (node.childNodes[0].getAttribute("data-testid"))
+                        return node.childNodes[0].getAttribute("data-testid").startsWith("conv-msg")
+                }
 
-        mutationObserver.observe(appElem, { childList: true, subtree: true });
+                return false;
+            }
+            var msgNodes = [];
+            if (isMessageNode(addedNode)) {
+                msgNodes.push(addedNode);
+            }
+            msgNodes.push(...addedNode.querySelectorAll('[data-testid^="conv-msg"]'));
+
+            for (let i = 0; i < msgNodes.length; i++)
+            {
+                const currentNode = msgNodes[i];
+                onNewMessageNodeAdded(currentNode);
+            }
+        }
+
+        
+        // Remove the menu item when the app is removed
+        for (var j = 0; j < removedNodes.length; j++)
+        {
+            var removedNode = removedNodes[j];
+            if (removedNode.classList == undefined) continue;
+            if (removedNode.classList.contains("two"))
+            {
+                // main app was removed, remove our artifacts
+                var menuItem = document.getElementsByClassName("menu-item-incognito")[0];
+                var dropItem = document.getElementsByClassName("drop")[0];
+                if (menuItem != undefined) menuItem.remove();
+                if (dropItem != undefined) dropItem.remove();
+
+                found = true;
+                break;
+            }
+
+        }
+        if (found) break;
     }
 
 }
@@ -735,7 +757,8 @@ function onNewMessageNodeAdded(messageNode)
     if (!data_id) data_id = messageNode.parentElement.parentElement.parentElement.getAttribute("data-id");
     if (data_id == null)
         debugger;
-    var msgID = data_id.split("_")[2];
+
+    var msgID = data_id.includes("_") ? data_id.split("_")[2] : data_id;
 
     // check if there are any view-once messages for this message ID
     // open viewOnce indexedDB
@@ -853,7 +876,7 @@ function restoreViewOnceMessageIfNeeded(messageNode, msgID)
 
 // This function gets called on every new message node that gets added to the screen,
 // and takes care of "deleted" messages - 
-// attempts to syntethise a message that was deleted from our DB
+// attempts to syntethise a message that was deleted from our DB / just mark it in red
 function restoreDeletedMessageIfNeeded(messageNode, msgID) 
 {
     document.dispatchEvent(new CustomEvent("getDeletedMessageByID", {detail: JSON.stringify({messageID: msgID})}));
@@ -881,8 +904,9 @@ function restoreDeletedMessageIfNeeded(messageNode, msgID)
         if (didFindInDeletedMessagesDB)
         {
             // This message was deleted and we have the original data.
-            messageNode.setAttribute("deleted-message", "true");
-
+            var bubbleElement = messageNode.querySelector(':scope [data-testid] > div');
+            if (bubbleElement) bubbleElement.setAttribute("deleted-message", "true");     // mark the message in red
+            
             if (!shouldTryToSyntehesizeMessage)
             {
                 // doesn't loook like a we need to restore anything becuase deletion was blocked already
@@ -899,8 +923,8 @@ function restoreDeletedMessageIfNeeded(messageNode, msgID)
             textSpan.textContent = "Failed to restore message";
             messageSubElement.appendChild(textSpan);
             messageSubElement.appendChild(span);
-            messageNode.setAttribute("deleted-message", "true");
-
+            if (messageNode.parentNode)
+                messageNode.parentNode.setAttribute("deleted-message", "true");     // mark the message in red
             return;
         }
 
@@ -1030,7 +1054,8 @@ function tryToSynthesizeMessage(messageSubElement, messageData)
 
 function markMessageNodeDeviceIfPossible(messageNode, msgID)
 {
-    var isOutgoingMessage = messageNode.className.includes("message-out");
+    var isOutgoingMessage = messageNode.className.includes("message-out"); // TODO: this class name does not exist anymore, condition will always be true
+    isOutgoingMessage = messageNode.innerHTML.includes("aria-label=\"You:\"");
     if (isOutgoingMessage)
     {
         // we don't want to mark our own messages
@@ -1065,7 +1090,10 @@ function markMessageNodeDeviceIfPossible(messageNode, msgID)
         imageElement.className = "device-type-image";
 
         var topMessageNode = messageNode.parentNode.parentNode.parentNode;
-        if (topMessageNode.innerHTML.includes("chat-profile-picture") || topMessageNode.innerHTML.includes("Open chat details"))
+        var previousNode = topMessageNode.previousElementSibling;
+        var possibleAvatarElement = previousNode ? previousNode : topMessageNode;
+
+        if (possibleAvatarElement.innerHTML.includes("chat-profile-picture") || possibleAvatarElement.innerHTML.includes("Open chat details"))
         {
             imageElement.className += " below-profile-picture";
         }

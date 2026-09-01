@@ -120,13 +120,17 @@ document.addEventListener('onReadConfirmationBlocked', async function (e)
     var blockedUser = blockedJid.substring(0, blockedJid.indexOf("@"));
 
     var chat = await getChatByJID(blockedJid);
-    if (!chat) return;
+    if (!chat) 
+    {
+        console.warn("WAIncognito: Did not find chat for JID " + blockedJid);
+        return;
+    }
 
     if (readConfirmationsHookEnabled && safetyDelay > 0 && chat.id.user == blockedUser)
     {
         markChatAsPendingReciptsSending(chat);
     }
-    else if (readConfirmationsHookEnabled && chat.id.user == blockedUser)
+    else if (readConfirmationsHookEnabled && (chat.id.user == blockedUser || chat.accountLid.toString() == blockedJid))
     {
         markChatAsBlocked(chat);
     }
@@ -185,7 +189,7 @@ document.addEventListener('onDropdownOpened', function (e)
     {
         var name = props.chat.name;
         var formattedName = props.chat.contact.name;
-        var jid = props.chat.id;
+        var jid = getJidOfChat(chat);
         var lastMessageIndex = props.chat.lastReceivedKey.id;
         var unreadCount = props.chat.unreadCount;
         var isGroup = props.chat.isGroup;
@@ -211,13 +215,15 @@ document.addEventListener('sendReadConfirmation', async function (e)
     var messageID = data.jid + messageIndex;
 
     var chat = await getChatByJID(data.jid);
+    var chatContainer = {chat: chat};
 
     // add an exception and remove it after a short time at any case
     exceptionsList.push(normalizeJID(data.jid));
     setTimeout(function() { exceptionsList = exceptionsList.filter(i => i !== data.jid); }, 2000);
     
-    WhatsAppAPI.Seen.sendSeen(chat).then(result =>
+    WhatsAppAPI.Seen.sendSeen(chatContainer).then(result =>
     {
+        // TODO: remove the old blinking chats code
         if (data.jid in blinkingChats)
         {
             clearInterval(blinkingChats[data.jid]["timerID"]);
@@ -308,7 +314,7 @@ function markChatAsPendingReciptsSending(chat)
         return;
     }
 
-    var messageID = chat.id + chat.lastReceivedKey.id;
+    var messageID = getJidOfChat(chat) + chat.lastReceivedKey.id;
     var previousMessage = document.getElementsByClassName("incognito-message").length > 0 ? 
                             document.getElementsByClassName("incognito-message")[0] : null;
     var seconds = safetyDelay;
@@ -382,7 +388,7 @@ function markChatAsPendingReciptsSending(chat)
             {
                 // time's up, sending receipt
                 clearInterval(id);
-                var data = { jid: chat.id, index: chat.lastReceivedKey.id, fromMe: chat.lastReceivedKey.fromMe, unreadCount: chat.unreadCount };
+                var data = { jid: getJidOfChat(chat), index: chat.lastReceivedKey.id, fromMe: chat.lastReceivedKey.fromMe, unreadCount: chat.unreadCount };
                 document.dispatchEvent(new CustomEvent('sendReadConfirmation', { detail: JSON.stringify(data) }));
 
                 var unreadCounter = blockedChatElem.querySelector("html[dir] ." + UIClassNames.UNREAD_COUNTER_CLASS);
@@ -410,7 +416,7 @@ function markChatAsBlocked(chat)
     }
 
     var currentChat = getCurrentChat();
-    var messageID = chat.id + chat.lastReceivedKey.id;
+    var messageID = getJidOfChat(chat) + chat.lastReceivedKey.id;
 
     if (currentChat.id.user == chat.id.user)
     {
@@ -444,7 +450,7 @@ function markChatAsBlocked(chat)
         sendButton.onclick = function ()
         {
             var data = {
-                name: chat.name, jid: chat.id, lastMessageIndex: chat.lastReceivedKey.id,
+                name: chat.name, jid: getJidOfChat(chat), lastMessageIndex: chat.lastReceivedKey.id,
                 fromMe: chat.lastReceivedKey.fromMe, unreadCount: chat.unreadCount, isGroup: chat.isGroup,
                 formattedName: chat.contact.name
             };
@@ -505,14 +511,32 @@ function markChatAsBlocked(chat)
 
 function setGlobalColorVaraibleString(variable, colorString)
 {
+    // TODO: I must think of a way to auto detect the selector, or set the global color in a better way
+    //       it it currently very hacky
+    // To get the new selector, look in e.g https://static.whatsapp.net/rsrc.php/v5/yK/l/0,cross/W3PYxWkG2-yfN1x-cay_sOU0sr-k7QgkZlwij8nbyzl0.css
+    // search for --WDS-persistent-always-branded
+
     var selector2 = ".xj6uduu.xj6uduu, .xj6uduu.xj6uduu:root";
     var selector3 = ".x8mwjyx.x8mwjyx, .x8mwjyx.x8mwjyx:root";
     var selector4 = ".x1h89ln0.x1h89ln0, .x1h89ln0.x1h89ln0:root";
+    var selector5 = ".xul6ihk.xul6ihk, .xul6ihk.xul6ihk:root";
+    var selector6 = ".x1646n1n.x1646n1n,.x1646n1n.x1646n1n:root";
+    var selector7 = ".x8rilwt.x8rilwt, .x8rilwt.x8rilwt:root";
+    var selector8 = ".xfmqtgv.xfmqtgv, .xfmqtgv.xfmqtgv:root";
+
+    if (document.querySelector(selector8))
+        document.querySelector(selector8).style.setProperty(variable, colorString);
+
+    if (document.querySelector(selector6))
+        document.querySelector(selector6).style.setProperty(variable, colorString);
+    if (document.querySelector(selector7))
+        document.querySelector(selector7).style.setProperty(variable, colorString);
     
     if (document.querySelector(selector2))
-    {
         document.querySelector(selector2).style.setProperty(variable, colorString);
-    }
+
+    if (document.querySelector(selector5))
+        document.querySelector(selector5).style.setProperty(variable, colorString);
 
     if (document.querySelector(UIClassNames.GLOBAL_COLORS_CONTAINER_SELECTOR))
     {

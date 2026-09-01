@@ -2,6 +2,9 @@
 // Helper functions
 // --------------------
 
+
+// TODO: this function currently does not support @lid JIDs, 
+//       I need to find a way to get the React element's LID
 function findChatEntryElementForJID(jid)
 {
     var chatsShown = document.getElementsByClassName(UIClassNames.CHAT_ENTRY_CLASS);
@@ -22,6 +25,10 @@ function findChatEntryElementForJID(jid)
             matches = true;
         }
         else if (typeof (jid) == "string" && id.user == jid.split("@")[0].split(":")[0])
+        {
+            matches = true;
+        }
+        else if (data.data.accountLid && data.data.accountLid.toString() == jid)
         {
             matches = true;
         }
@@ -134,7 +141,8 @@ function isChatBlocked(jid)
 
     for (jid in blockedChats)
     {
-        if (jid.split("@")[0].split(":")[0] == user)
+        var possibleLid = blockedChats[jid].accountLid ? blockedChats[jid].accountLid.toString() : "";
+        if (jid.split("@")[0].split(":")[0] == user || possibleLid.split("@")[0].split(":")[0] == user)
             return true;
     }
 
@@ -146,12 +154,13 @@ async function getChatByJID(jid)
     if (jid == undefined) debugger;
     jid = normalizeJID(jid);
 
-    if (window.WhatsAppAPI && WhatsAppAPI.Store && WhatsAppAPI.ChatCollection && WhatsAppAPI.ChatCollection.find)
+    if (window.WhatsAppAPI && WhatsAppAPI.ChatCollection && WhatsAppAPI.ChatCollection.find)
     {
         try
         {
             var chat = await WhatsAppAPI.ChatCollection.find(jid);
-            return chat;
+            if (chat != null)
+                return chat;
         }
         catch (e)
         {
@@ -173,6 +182,12 @@ async function getChatByJID(jid)
     }
 
     return chat;
+}
+
+function getJidOfChat(chat)
+{
+    var jid = chat.accountLid ? chat.accountLid.toString() : chat.id.toString();
+    return normalizeJID(jid);
 }
 
 function normalizeJID(jid)
